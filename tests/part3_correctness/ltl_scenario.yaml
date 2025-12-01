@@ -1,0 +1,43 @@
+clotho_version: "1.0"
+
+types:
+  Status: string
+
+design:
+  components:
+    - name: Process
+      state:
+        - name: tasks
+          schema: {id: string, status: Status}
+      handlers:
+        - on_message: StartTask
+          logic:
+            - create: tasks
+              data: {id: "{{trigger.payload.id}}", status: "PENDING"}
+            - send:
+                to: Process
+                message: FinishTask
+                payload: {id: "{{trigger.payload.id}}"}
+
+        - on_message: FinishTask
+          logic:
+            - update: tasks
+              where: {id: "{{trigger.payload.id}}"}
+              set: {status: "COMPLETED"}
+
+test:
+  invariants:
+    # LTL Property: If a task is started, it must eventually be completed
+    # We use a simplified syntax for now that we can parse with regex
+    - name: "Liveness"
+      check: "always(msg.StartTask -> eventually(read.Process.tasks.status == 'COMPLETED'))"
+
+run:
+  scenarios:
+    - name: ltl_test_scenario
+      initial_state: []
+      sequence:
+        - action:
+            to: Process
+            message: StartTask
+            payload: {id: "task_1"}

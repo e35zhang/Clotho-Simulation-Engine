@@ -1,0 +1,251 @@
+# M6 Statistical Fuzzing Demo: Banking Vulnerabilities
+# This scenario INTENTIONALLY has bugs that fuzzing will catch!
+#
+# Vulnerabilities demonstrated:
+# 1. No negative amount validation → Can create money from nothing
+# 2. No balance check before withdrawal → Overdraft allowed
+# 3. Integer overflow possible → Balance wraps around
+# 4. No account existence check → Transfer to invalid account succeeds
+
+clotho_version: '1.0'
+
+types:
+  Money: integer
+  AccountId: integer
+
+design:
+  components:
+    - name: BankingService
+      state:
+        - name: accounts
+          schema:
+            account_id: {type: INTEGER, pk: true}
+            owner: TEXT
+            balance: REAL
+            status: TEXT
+        
+      handlers:
+        # VULNERABLE: No negative amount check!
+        - on_message: transfer
+          logic:
+            - read: accounts
+              where:
+                account_id: '{{trigger.payload.from_account}}'
+              as: from_account
+            - read: accounts
+              where:
+                account_id: '{{trigger.payload.to_account}}'
+              as: to_account
+            # BUG: This allows negative amounts to CREATE money!
+            - update: accounts
+              set:
+                balance: '{{read.from_account.balance - trigger.payload.amount}}'
+              where:
+                account_id: '{{trigger.payload.from_account}}'
+            - update: accounts
+              set:
+                balance: '{{read.to_account.balance + trigger.payload.amount}}'
+              where:
+                account_id: '{{trigger.payload.to_account}}'
+      
+        # VULNERABLE: No balance check before withdrawal!
+        - on_message: withdraw
+          logic:
+            - read: accounts
+              where:
+                account_id: '{{trigger.payload.account_id}}'
+              as: account
+            # BUG: No check if balance >= amount
+            - update: accounts
+              set:
+                balance: '{{read.account.balance - trigger.payload.amount}}'
+              where:
+                account_id: '{{trigger.payload.account_id}}'
+      
+        # VULNERABLE: No account status check
+        - on_message: deposit
+          logic:
+            - read: accounts
+              where:
+                account_id: '{{trigger.payload.account_id}}'
+              as: account
+            # BUG: Can deposit to frozen/closed accounts
+            - update: accounts
+              set:
+                balance: '{{read.account.balance + trigger.payload.amount}}'
+              where:
+                account_id: '{{trigger.payload.account_id}}'
+
+test:
+  invariants: []
+
+run:
+  scenarios:
+    - name: vulnerable_banking_test
+      initial_state:
+        - component: BankingService
+          state:
+            accounts:
+              - {account_id: 1, owner: 'Alice', balance: 1000.0, status: 'active'}
+              - {account_id: 2, owner: 'Bob', balance: 500.0, status: 'active'}
+              - {account_id: 3, owner: 'Charlie', balance: 100.0, status: 'frozen'}
+    
+      steps:
+        # Normal transfer - should work
+        - send: transfer
+          to: BankingService
+          payload:
+            from_account: 1
+            to_account: 2
+            amount: 50.0
+      
+        # Withdrawal that might overdraft (fuzzing will test with large amounts)
+        - send: withdraw
+          to: BankingService
+          payload:
+            account_id: 2
+            amount: 100.0
+      
+        # Deposit that might go to frozen account
+        - send: deposit
+          to: BankingService
+          payload:
+            account_id: 3
+            amount: 200.0
+      
+        # Another transfer (fuzzing will test with negative amounts, MAX_INT, etc.)
+        - send: transfer
+          to: BankingService
+          payload:
+            from_account: 2
+            to_account: 1
+            amount: 25.0
+
+# ========================================
+# What Fuzzing Will Find
+# ========================================
+#
+# WITHOUT FUZZING (Baseline):
+# - All transactions succeed with normal values
+# - Appears to work perfectly
+# - 100% success rate
+#
+# WITH INPUT FUZZING:
+# 1. Negative Amount Exploit:
+#    - Fuzzed: amount = -100.0
+#    - Result: from_account GAINS 100, to_account GAINS 100
+#    - Money created from nothing! 💰
+#
+# 2. Integer Overflow:
+#    - Fuzzed: amount = 2147483647 (MAX_INT)
+#    - Result: Balance becomes negative or wraps around
+#    - Account shows $-2,147,482,647 after subtraction
+#
+# 3. Zero Amount Transfer:
+#    - Fuzzed: amount = 0
+#    - Result: No-op but wastes processing
+#    - Should be rejected
+#
+# 4. Type Confusion:
+#    - Fuzzed: account_id = "1" (string instead of int)
+#    - Result: Account not found, transaction fails
+#    - Inconsistent behavior
+#
+# WITH STATE FUZZING:
+# 5. Empty Account Table:
+#    - Fuzzed: accounts = []
+#    - Result: All transactions fail with "account not found"
+#    - System non-functional
+#
+# 6. Extreme Balance:
+#    - Fuzzed: balance = 0.01
+#    - Result: Withdrawal of 100.0 → negative balance
+#    - Overdraft allowed!
+#
+# 7. Frozen Account Not Enforced:
+#    - Fuzzed: Charlie's account is frozen
+#    - Result: Can still deposit/withdraw
+#    - Business rule violation
+#
+# WITH SCENARIO FUZZING:
+# 8. Parallel Double-Spend:
+#    - Fuzzed: Two withdrawals execute simultaneously
+#    - Result: Both succeed even if balance < total
+#    - Race condition allows overdraft
+#
+# 9. Interleaved Transactions:
+#    - Fuzzed: Transfer → Withdraw → Deposit (random order)
+#    - Result: Final balance depends on execution order
+#    - Non-deterministic behavior
+#
+# ========================================
+# Expected Fuzzing Results
+# ========================================
+#
+# Baseline (no fuzzing):
+#   Reliability: 100%
+#   All 10 simulations succeed
+#   Appears bug-free ✓
+#
+# Input fuzzing only:
+#   Reliability: 60-70%
+#   30-40% fail with:
+#   - Negative balances
+#   - Integer overflow
+#   - Type errors
+#   Bugs found: Negative amount exploit 🐛
+#
+# State fuzzing only:
+#   Reliability: 40-50%
+#   50-60% fail with:
+#   - Account not found
+#   - Insufficient balance
+#   - Frozen account operations
+#   Bugs found: No balance validation 🐛
+#
+# All fuzzing enabled:
+#   Reliability: 30-40%
+#   60-70% fail with multiple issues
+#   Bugs found: 5+ distinct vulnerabilities 🐛🐛🐛
+#
+# ========================================
+# How to Fix These Bugs
+# ========================================
+#
+# Add validation to handlers:
+#
+# 1. Negative amount check:
+#    match:
+#      value: '{{trigger.payload.amount}}'
+#      cases:
+#        - when: '<= 0'
+#          sends:
+#            - {send: {to: _SELF_, message: TransferFailed, payload: {error: 'Invalid amount'}}}
+#          stop: true
+#
+# 2. Balance check:
+#    match:
+#      value: '{{read.from_account.balance}}'
+#      cases:
+#        - when: '< {{trigger.payload.amount}}'
+#          sends:
+#            - {send: {to: _SELF_, message: InsufficientFunds}}
+#          stop: true
+#
+# 3. Account status check:
+#    match:
+#      value: '{{read.account.status}}'
+#      cases:
+#        - when: '!= "active"'
+#          sends:
+#            - {send: {to: _SELF_, message: AccountFrozen}}
+#          stop: true
+#
+# 4. Integer overflow protection:
+#    match:
+#      value: '{{trigger.payload.amount}}'
+#      cases:
+#        - when: '> 1000000'
+#          sends:
+#            - {send: {to: _SELF_, message: AmountTooLarge}}
+#          stop: true

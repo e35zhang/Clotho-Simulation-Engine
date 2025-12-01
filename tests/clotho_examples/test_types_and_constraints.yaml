@@ -1,0 +1,52 @@
+clotho_version: "1.0"
+
+# Part 2: Vocabulary of Verification — Types
+types:
+  # Domain Primitive with constraints
+  Money:
+    type: integer
+    unit: cents
+    constraints: 
+      min: 0
+      max: 1000000000
+
+  # String with Regex Pattern for Fuzzer
+  AccountId:
+    type: string
+    pattern: "^ACC_[0-9]{4}$"
+
+  # Enum Type
+  TransactionStatus:
+    type: enum
+    values: [PENDING, COMPLETED, FAILED]
+
+  # Complex Object Type
+  Address:
+    type: object
+    fields:
+      street: string
+      city: string
+      zip: 
+        type: string
+        pattern: "^[0-9]{5}$"
+
+# Message Contracts
+design:
+  components: [] # Empty for this test
+  messages:
+    InitiateTransfer:
+      from_id: AccountId
+      to_id: AccountId
+      amount: Money
+      request_id: string
+    
+    FraudCheckResult:
+      tx_id: string
+      approved: boolean
+      reason: string?  # Optional field
+
+test:
+  cases: []
+
+run:
+  generators: []

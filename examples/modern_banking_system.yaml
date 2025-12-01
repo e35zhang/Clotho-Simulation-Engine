@@ -1,0 +1,701 @@
+clotho_version: '3.0'
+test:
+  cases: []
+types: {}
+design:
+  components:
+  - name: CustomerPortal
+    state:
+    - name: sessions
+      schema:
+        session_id: TEXT
+        customer_id: TEXT
+        login_timestamp: TEXT
+        ip_address: TEXT
+        device_fingerprint: TEXT
+    handlers:
+    - on_message: CustomerLogin
+      logic:
+      - create: sessions
+        data:
+          session_id: '{{trigger.payload.session_id}}'
+          customer_id: '{{trigger.payload.customer_id}}'
+          login_timestamp: '{{trigger.payload.timestamp}}'
+          ip_address: '{{trigger.payload.ip_address}}'
+          device_fingerprint: '{{trigger.payload.device_fingerprint}}'
+      - send:
+          to: AccountService
+          message: FetchAccountSummary
+          payload:
+            customer_id: '{{trigger.payload.customer_id}}'
+            session_id: '{{trigger.payload.session_id}}'
+    - on_message: InitiateTransfer
+      logic:
+      - read: sessions
+        where:
+          session_id: '{{trigger.payload.session_id}}'
+        as: session
+      - send:
+          to: TransactionEngine
+          message: ProcessTransfer
+          payload:
+            transaction_id: '{{trigger.payload.transaction_id}}'
+            from_account: '{{trigger.payload.from_account}}'
+            to_account: '{{trigger.payload.to_account}}'
+            amount: '{{trigger.payload.amount}}'
+            timestamp: '{{trigger.payload.timestamp}}'
+            customer_id: '{{read.session.customer_id}}'
+            device_fingerprint: '{{read.session.device_fingerprint}}'
+            ip_address: '{{trigger.payload.ip_address}}'
+  - name: AccountService
+    state:
+    - name: accounts
+      schema:
+        account_id: TEXT
+        customer_id: TEXT
+        account_type: TEXT
+        balance: INTEGER
+        status: TEXT
+        overdraft_limit: INTEGER
+        last_transaction_date: TEXT
+    - name: customers
+      schema:
+        customer_id: TEXT
+        name: TEXT
+        email: TEXT
+        risk_score: INTEGER
+        tier: TEXT
+    handlers:
+    - on_message: CreateAccount
+      logic:
+      - read: customers
+        where:
+          customer_id: '{{trigger.payload.customer_id}}'
+        as: customer
+      - create: accounts
+        data:
+          account_id: '{{trigger.payload.account_id}}'
+          customer_id: '{{trigger.payload.customer_id}}'
+          account_type: '{{trigger.payload.account_type}}'
+          balance: 0
+          status: Active
+          overdraft_limit: '{{trigger.payload.overdraft_limit}}'
+          last_transaction_date: '{{trigger.payload.timestamp}}'
+      - send:
+          to: NotificationService
+          message: SendEmail
+          payload:
+            customer_id: '{{trigger.payload.customer_id}}'
+            template: account_created
+            account_id: '{{trigger.payload.account_id}}'
+    - on_message: FetchAccountSummary
+      logic:
+      - read: accounts
+        where:
+          customer_id: '{{trigger.payload.customer_id}}'
+        as: accounts
+    - on_message: DebitAccount
+      logic:
+      - read: accounts
+        where:
+          account_id: '{{trigger.payload.account_id}}'
+        as: account
+    - on_message: CreditAccount
+      logic:
+      - read: accounts
+        where:
+          account_id: '{{trigger.payload.account_id}}'
+        as: account
+      - update: accounts
+        where:
+          account_id: '{{trigger.payload.account_id}}'
+        set:
+          balance: '{{read.account.balance + trigger.payload.amount}}'
+          last_transaction_date: '{{trigger.payload.timestamp}}'
+      - send:
+          to: TransactionEngine
+          message: CreditSuccessful
+          payload:
+            transaction_id: '{{trigger.payload.transaction_id}}'
+            account_id: '{{trigger.payload.account_id}}'
+            new_balance: '{{read.account.balance + trigger.payload.amount}}'
+    - on_message: AddRewardPoints
+      logic:
+      - read: customers
+        where:
+          customer_id: '{{trigger.payload.customer_id}}'
+        as: customer
+      - update: customers
+        where:
+          customer_id: '{{trigger.payload.customer_id}}'
+        set:
+          tier: '{{trigger.payload.new_tier}}'
+  - name: TransactionEngine
+    state:
+    - name: transactions
+      schema:
+        transaction_id: TEXT
+        from_account: TEXT
+        to_account: TEXT
+        amount: INTEGER
+        status: TEXT
+        timestamp: TEXT
+        fraud_check_status: TEXT
+        customer_id: TEXT
+        transaction_type: TEXT
+    - name: pending_transfers
+      schema:
+        transaction_id: TEXT
+        debit_status: TEXT
+        credit_status: TEXT
+        fraud_status: TEXT
+    handlers:
+    - on_message: ProcessTransfer
+      logic:
+      - create: transactions
+        data:
+          transaction_id: '{{trigger.payload.transaction_id}}'
+          from_account: '{{trigger.payload.from_account}}'
+          to_account: '{{trigger.payload.to_account}}'
+          amount: '{{trigger.payload.amount}}'
+          status: Pending
+          timestamp: '{{trigger.payload.timestamp}}'
+          fraud_check_status: Pending
+          customer_id: '{{trigger.payload.customer_id}}'
+          transaction_type: transfer
+      - create: pending_transfers
+        data:
+          transaction_id: '{{trigger.payload.transaction_id}}'
+          debit_status: Pending
+          credit_status: Pending
+          fraud_status: Pending
+      - send:
+          to: FraudDetection
+          message: CheckTransaction
+          payload:
+            transaction_id: '{{trigger.payload.transaction_id}}'
+            customer_id: '{{trigger.payload.customer_id}}'
+            amount: '{{trigger.payload.amount}}'
+            device_fingerprint: '{{trigger.payload.device_fingerprint}}'
+            ip_address: '{{trigger.payload.ip_address}}'
+    - on_message: FraudCheckPassed
+      logic:
+      - read: transactions
+        where:
+          transaction_id: '{{trigger.payload.transaction_id}}'
+        as: txn
+      - update: pending_transfers
+        where:
+          transaction_id: '{{trigger.payload.transaction_id}}'
+        set:
+          fraud_status: Approved
+      - update: transactions
+        where:
+          transaction_id: '{{trigger.payload.transaction_id}}'
+        set:
+          fraud_check_status: Approved
+      - send:
+          to: AccountService
+          message: DebitAccount
+          payload:
+            transaction_id: '{{trigger.payload.transaction_id}}'
+            account_id: '{{read.txn.from_account}}'
+            amount: '{{read.txn.amount}}'
+            timestamp: '{{read.txn.timestamp}}'
+    - on_message: FraudCheckFailed
+      logic:
+      - update: transactions
+        where:
+          transaction_id: '{{trigger.payload.transaction_id}}'
+        set:
+          status: Rejected_Fraud
+          fraud_check_status: Rejected
+      - send:
+          to: NotificationService
+          message: SendFraudAlert
+          payload:
+            transaction_id: '{{trigger.payload.transaction_id}}'
+            reason: '{{trigger.payload.reason}}'
+      - send:
+          to: AuditLog
+          message: LogFraudEvent
+          payload:
+            transaction_id: '{{trigger.payload.transaction_id}}'
+            event_type: fraud_detected
+            reason: '{{trigger.payload.reason}}'
+    - on_message: DebitSuccessful
+      logic:
+      - read: transactions
+        where:
+          transaction_id: '{{trigger.payload.transaction_id}}'
+        as: txn
+      - update: pending_transfers
+        where:
+          transaction_id: '{{trigger.payload.transaction_id}}'
+        set:
+          debit_status: Completed
+      - send:
+          to: AccountService
+          message: CreditAccount
+          payload:
+            transaction_id: '{{trigger.payload.transaction_id}}'
+            account_id: '{{read.txn.to_account}}'
+            amount: '{{read.txn.amount}}'
+            timestamp: '{{read.txn.timestamp}}'
+    - on_message: CreditSuccessful
+      logic:
+      - read: transactions
+        where:
+          transaction_id: '{{trigger.payload.transaction_id}}'
+        as: txn
+      - update: pending_transfers
+        where:
+          transaction_id: '{{trigger.payload.transaction_id}}'
+        set:
+          credit_status: Completed
+      - update: transactions
+        where:
+          transaction_id: '{{trigger.payload.transaction_id}}'
+        set:
+          status: Completed
+      - send:
+          to: NotificationService
+          message: SendTransferConfirmation
+          payload:
+            transaction_id: '{{trigger.payload.transaction_id}}'
+            customer_id: '{{read.txn.customer_id}}'
+      - send:
+          to: AuditLog
+          message: LogTransaction
+          payload:
+            transaction_id: '{{trigger.payload.transaction_id}}'
+            event_type: transfer_completed
+            amount: '{{read.txn.amount}}'
+      - send:
+          to: RewardSystem
+          message: ProcessRewards
+          payload:
+            transaction_id: '{{trigger.payload.transaction_id}}'
+            customer_id: '{{read.txn.customer_id}}'
+            amount: '{{read.txn.amount}}'
+    - on_message: InsufficientFunds
+      logic:
+      - update: transactions
+        where:
+          transaction_id: '{{trigger.payload.transaction_id}}'
+        set:
+          status: Rejected_InsufficientFunds
+      - send:
+          to: NotificationService
+          message: SendInsufficientFundsAlert
+          payload:
+            transaction_id: '{{trigger.payload.transaction_id}}'
+            required: '{{trigger.payload.required}}'
+            available: '{{trigger.payload.available}}'
+  - name: FraudDetection
+    state:
+    - name: fraud_rules
+      schema:
+        rule_id: TEXT
+        rule_name: TEXT
+        threshold: INTEGER
+    - name: risk_scores
+      schema:
+        customer_id: TEXT
+        risk_score: INTEGER
+        last_flagged_date: TEXT
+        total_flagged_count: INTEGER
+    handlers:
+    - on_message: CheckTransaction
+      logic:
+      - read: risk_scores
+        where:
+          customer_id: '{{trigger.payload.customer_id}}'
+        as: risk
+  - name: NotificationService
+    state:
+    - name: notifications
+      schema:
+        notification_id: TEXT
+        customer_id: TEXT
+        channel: TEXT
+        template: TEXT
+        status: TEXT
+        sent_timestamp: TEXT
+    handlers:
+    - on_message: SendEmail
+      logic:
+      - create: notifications
+        data:
+          notification_id: '{{trigger.payload.notification_id}}'
+          customer_id: '{{trigger.payload.customer_id}}'
+          channel: email
+          template: '{{trigger.payload.template}}'
+          status: sent
+          sent_timestamp: '{{trigger.payload.timestamp}}'
+    - on_message: SendTransferConfirmation
+      logic:
+      - create: notifications
+        data:
+          notification_id: '{{trigger.payload.transaction_id}}_confirmation'
+          customer_id: '{{trigger.payload.customer_id}}'
+          channel: push
+          template: transfer_success
+          status: sent
+          sent_timestamp: '{{trigger.payload.timestamp}}'
+    - on_message: SendFraudAlert
+      logic:
+      - create: notifications
+        data:
+          notification_id: '{{trigger.payload.transaction_id}}_fraud_alert'
+          customer_id: '{{trigger.payload.customer_id}}'
+          channel: sms
+          template: fraud_alert
+          status: sent
+          sent_timestamp: '{{trigger.payload.timestamp}}'
+    - on_message: SendInsufficientFundsAlert
+      logic:
+      - create: notifications
+        data:
+          notification_id: '{{trigger.payload.transaction_id}}_insufficient'
+          customer_id: '{{trigger.payload.customer_id}}'
+          channel: push
+          template: insufficient_funds
+          status: sent
+          sent_timestamp: '{{trigger.payload.timestamp}}'
+  - name: AuditLog
+    state:
+    - name: audit_events
+      schema:
+        event_id: TEXT
+        transaction_id: TEXT
+        event_type: TEXT
+        timestamp: TEXT
+        details: TEXT
+    handlers:
+    - on_message: LogTransaction
+      logic:
+      - create: audit_events
+        data:
+          event_id: '{{trigger.payload.transaction_id}}_log'
+          transaction_id: '{{trigger.payload.transaction_id}}'
+          event_type: '{{trigger.payload.event_type}}'
+          timestamp: '{{trigger.payload.timestamp}}'
+          details: '{{trigger.payload.details}}'
+    - on_message: LogFraudEvent
+      logic:
+      - create: audit_events
+        data:
+          event_id: '{{trigger.payload.transaction_id}}_fraud'
+          transaction_id: '{{trigger.payload.transaction_id}}'
+          event_type: fraud_detected
+          timestamp: '{{trigger.payload.timestamp}}'
+          details: '{{trigger.payload.reason}}'
+  - name: RewardSystem
+    state:
+    - name: reward_points
+      schema:
+        customer_id: TEXT
+        total_points: INTEGER
+        tier: TEXT
+        last_updated: TEXT
+    handlers:
+    - on_message: ProcessRewards
+      logic:
+      - read: reward_points
+        where:
+          customer_id: '{{trigger.payload.customer_id}}'
+        as: rewards
+run:
+  scenarios:
+  - name: Successful Transfer - Normal Customer
+    description: A legitimate transfer from a low-risk customer with sufficient funds
+    initial_state:
+    - component: AccountService
+      storage:
+        accounts:
+        - account_id: ACC_001
+          customer_id: CUST_001
+          account_type: checking
+          balance: 5000
+          status: Active
+          overdraft_limit: 500
+          last_transaction_date: '2025-01-01'
+        - account_id: ACC_002
+          customer_id: CUST_002
+          account_type: savings
+          balance: 1000
+          status: Active
+          overdraft_limit: 0
+          last_transaction_date: '2025-01-01'
+        customers:
+        - customer_id: CUST_001
+          name: Alice Johnson
+          email: alice@example.com
+          risk_score: 25
+          tier: Gold
+        - customer_id: CUST_002
+          name: Bob Smith
+          email: bob@example.com
+          risk_score: 15
+          tier: Silver
+    - component: FraudDetection
+      storage:
+        risk_scores:
+        - customer_id: CUST_001
+          risk_score: 25
+          last_flagged_date: '2024-12-01'
+          total_flagged_count: 0
+    - component: RewardSystem
+      storage:
+        reward_points:
+        - customer_id: CUST_001
+          total_points: 5000
+          tier: Gold
+          last_updated: '2025-01-01'
+    sequence:
+    - action:
+        from: _EXTERNAL_
+        to: CustomerPortal
+        message: CustomerLogin
+        payload:
+          session_id: SESSION_001
+          customer_id: CUST_001
+          timestamp: '2025-01-15T10:00:00Z'
+          ip_address: 192.168.1.100
+          device_fingerprint: DEVICE_ABC123
+    - action:
+        from: _EXTERNAL_
+        to: CustomerPortal
+        message: InitiateTransfer
+        payload:
+          transaction_id: TXN_001
+          session_id: SESSION_001
+          from_account: ACC_001
+          to_account: ACC_002
+          amount: 2000
+          timestamp: '2025-01-15T10:05:00Z'
+          ip_address: 192.168.1.100
+  - name: Fraud Detection - High Risk Customer
+    description: Large transaction from a high-risk customer should be blocked
+    initial_state:
+    - component: AccountService
+      storage:
+        accounts:
+        - account_id: ACC_003
+          customer_id: CUST_003
+          account_type: checking
+          balance: 50000
+          status: Active
+          overdraft_limit: 1000
+          last_transaction_date: '2025-01-01'
+        - account_id: ACC_004
+          customer_id: CUST_004
+          account_type: savings
+          balance: 1000
+          status: Active
+          overdraft_limit: 0
+          last_transaction_date: '2025-01-01'
+        customers:
+        - customer_id: CUST_003
+          name: Charlie Suspicious
+          email: charlie@example.com
+          risk_score: 85
+          tier: Bronze
+    - component: FraudDetection
+      storage:
+        risk_scores:
+        - customer_id: CUST_003
+          risk_score: 85
+          last_flagged_date: '2025-01-10'
+          total_flagged_count: 3
+    steps:
+    - send: InitiateTransfer
+      to: CustomerPortal
+      payload:
+          transaction_id: TXN_FRAUD_001
+          session_id: SESSION_FRAUD
+          from_account: ACC_003
+          to_account: ACC_004
+          amount: 15000
+          customer_id: CUST_003
+          device_fingerprint: DEVICE_SUSPICIOUS
+          ip_address: 10.0.0.1
+          timestamp: '2025-01-15T14:00:00Z'
+  - name: Insufficient Funds Scenario
+    description: Transfer attempt with insufficient balance should be rejected
+    initial_state:
+    - component: AccountService
+      storage:
+        accounts:
+        - account_id: ACC_005
+          customer_id: CUST_005
+          account_type: checking
+          balance: 100
+          status: Active
+          overdraft_limit: 200
+          last_transaction_date: '2025-01-01'
+        - account_id: ACC_006
+          customer_id: CUST_006
+          account_type: savings
+          balance: 5000
+          status: Active
+          overdraft_limit: 0
+          last_transaction_date: '2025-01-01'
+        customers:
+        - customer_id: CUST_005
+          name: David Poor
+          email: david@example.com
+          risk_score: 20
+          tier: Silver
+    - component: FraudDetection
+      storage:
+        risk_scores:
+        - customer_id: CUST_005
+          risk_score: 20
+          last_flagged_date: '2024-11-01'
+          total_flagged_count: 0
+    steps:
+    - send: InitiateTransfer
+      to: CustomerPortal
+      payload:
+          transaction_id: TXN_INSUFFICIENT
+          session_id: SESSION_POOR
+          from_account: ACC_005
+          to_account: ACC_006
+          amount: 500
+          customer_id: CUST_005
+          device_fingerprint: DEVICE_NORMAL
+          ip_address: 192.168.1.50
+          timestamp: '2025-01-15T16:00:00Z'
+  - name: Reward Points and Tier Upgrade
+    description: Large successful transfer should earn rewards and potentially upgrade
+      tier
+    initial_state:
+    - component: AccountService
+      storage:
+        accounts:
+        - account_id: ACC_007
+          customer_id: CUST_007
+          account_type: checking
+          balance: 30000
+          status: Active
+          overdraft_limit: 2000
+          last_transaction_date: '2025-01-01'
+        - account_id: ACC_008
+          customer_id: CUST_008
+          account_type: savings
+          balance: 10000
+          status: Active
+          overdraft_limit: 0
+          last_transaction_date: '2025-01-01'
+        customers:
+        - customer_id: CUST_007
+          name: Emma Wealthy
+          email: emma@example.com
+          risk_score: 10
+          tier: Gold
+    - component: FraudDetection
+      storage:
+        risk_scores:
+        - customer_id: CUST_007
+          risk_score: 10
+          last_flagged_date: '2024-06-01'
+          total_flagged_count: 0
+    - component: RewardSystem
+      storage:
+        reward_points:
+        - customer_id: CUST_007
+          total_points: 9500
+          tier: Gold
+          last_updated: '2025-01-01'
+    steps:
+    - send: InitiateTransfer
+      to: CustomerPortal
+      payload:
+          transaction_id: TXN_REWARD
+          session_id: SESSION_WEALTHY
+          from_account: ACC_007
+          to_account: ACC_008
+          amount: 5000
+          customer_id: CUST_007
+          device_fingerprint: DEVICE_TRUSTED
+          ip_address: 192.168.1.200
+          timestamp: '2025-01-15T18:00:00Z'
+  - name: Complex Multi-Step Transaction Flow
+    description: Tests the complete flow with multiple components interacting
+    initial_state:
+    - component: CustomerPortal
+      storage:
+        sessions:
+        - session_id: SESSION_MULTI
+          customer_id: CUST_MULTI
+          login_timestamp: '2025-01-16T09:00:00Z'
+          ip_address: 192.168.1.150
+          device_fingerprint: DEVICE_MULTI
+    - component: AccountService
+      storage:
+        accounts:
+        - account_id: ACC_MULTI_1
+          customer_id: CUST_MULTI
+          account_type: checking
+          balance: 10000
+          status: Active
+          overdraft_limit: 1000
+          last_transaction_date: '2025-01-01'
+        - account_id: ACC_MULTI_2
+          customer_id: CUST_OTHER
+          account_type: savings
+          balance: 2000
+          status: Active
+          overdraft_limit: 0
+          last_transaction_date: '2025-01-01'
+        customers:
+        - customer_id: CUST_MULTI
+          name: Frank Complex
+          email: frank@example.com
+          risk_score: 30
+          tier: Silver
+    - component: FraudDetection
+      storage:
+        fraud_rules:
+        - rule_id: RULE_001
+          rule_name: Large Transaction Limit
+          threshold: 10000
+        risk_scores:
+        - customer_id: CUST_MULTI
+          risk_score: 30
+          last_flagged_date: '2024-12-15'
+          total_flagged_count: 1
+    - component: RewardSystem
+      storage:
+        reward_points:
+        - customer_id: CUST_MULTI
+          total_points: 3000
+          tier: Silver
+          last_updated: '2025-01-01'
+    steps:
+    - send: InitiateTransfer
+      to: CustomerPortal
+      payload:
+          transaction_id: TXN_MULTI_1
+          session_id: SESSION_MULTI
+          from_account: ACC_MULTI_1
+          to_account: ACC_MULTI_2
+          amount: 3000
+          customer_id: CUST_MULTI
+          device_fingerprint: DEVICE_MULTI
+          ip_address: 192.168.1.150
+          timestamp: '2025-01-16T09:05:00Z'
+    - send: InitiateTransfer
+      to: CustomerPortal
+      payload:
+          transaction_id: TXN_MULTI_2
+          session_id: SESSION_MULTI
+          from_account: ACC_MULTI_1
+          to_account: ACC_MULTI_2
+          amount: 4000
+          customer_id: CUST_MULTI
+          device_fingerprint: DEVICE_MULTI
+          ip_address: 192.168.1.150
+          timestamp: '2025-01-16T09:10:00Z'

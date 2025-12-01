@@ -1,0 +1,56 @@
+clotho_version: "1.0"
+
+types:
+  Money: integer
+  AccountId: string
+
+# Part 3: Static Topology — Design (Space)
+design:
+  components:
+    - name: AccountService
+      # Privatized Storage
+      state:
+        - name: accounts
+          schema:
+            id: {type: AccountId, pk: true}
+            balance: {type: Money, default: 0}
+            version: {type: integer, default: 0} # Optimistic locking
+
+      handlers:
+        - name: handle_transfer
+          on_message: InitiateTransfer
+          # Declarative Logic (IR)
+          logic:
+            - read: accounts
+              key: "{{trigger.payload.from_id}}"
+              as: sender
+            
+            - read: accounts
+              key: "{{trigger.payload.to_id}}"
+              as: receiver
+            
+            - match:
+                on: "{{read.sender.balance}} >= {{trigger.payload.amount}}"
+                cases:
+                  - when: true
+                    then:
+                      - update: accounts
+                        where: {id: "{{trigger.payload.from_id}}"}
+                        set: {balance: "{{read.sender.balance}} - {{trigger.payload.amount}}"}
+                      - update: accounts
+                        where: {id: "{{trigger.payload.to_id}}"}
+                        set: {balance: "{{read.receiver.balance}} + {{trigger.payload.amount}}"}
+                      - send: TransferCompleted
+                        to: TransactionService
+                        payload: {tx_id: "{{trigger.payload.request_id}}"}
+                  - default:
+                    then:
+                      - send: TransferFailed
+                        to: NotificationService
+                        payload: {reason: "Insufficient Funds"}
+
+test:
+  cases: []
+
+run:
+  generators: []

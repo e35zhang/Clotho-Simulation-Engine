@@ -1,0 +1,51 @@
+clotho_version: "1.0"
+
+types:
+  Money: integer
+
+design:
+  components:
+    - name: AccountService
+      state:
+        - name: accounts
+          schema: {id: string, balance: Money}
+
+test:
+  cases: []
+
+# Part 5: Dynamic Evolution — Run (Time)
+run:
+  # Initial State (Fixtures)
+  fixtures:
+    - component: AccountService
+      table: accounts
+      rows:
+        - {id: "acc_1", balance: 1000}
+        - {id: "acc_2", balance: 500}
+
+  # Environment Configuration
+  environment:
+    seed: 12345
+    scheduler:
+      interleaving_mode: "Aggressive" # Context Switching
+    
+    # Fault Injection
+    faults:
+      - type: "MessageDrop"
+        rate: 0.01
+      - type: "ComponentCrash"
+        target: "AccountService"
+        rate: 0.001
+
+  # Generators (Chaos Source)
+  generators:
+    - component: "WhaleUser"
+      count: 5
+      behavior:
+        send: InitiateTransfer
+        fuzz_hint: {amount: "high_range"} # AI Hint
+    
+    - component: "HackerScript"
+      behavior:
+        strategy: "double_spend_attempt"
+        target: InitiateTransfer

@@ -1,0 +1,147 @@
+clotho_version: "3.0"
+
+test:
+  invariants:
+    - name: NoLostUpdates
+      # This invariant is checked dynamically - score should equal (number of PlayerAction events) * 10
+      check: "score_matches_action_count"
+      description: "Each PlayerAction adds 10 to score. Lost updates = score < expected"
+
+types:
+  PlayerId:
+    type: string
+    pattern: "^P_[0-9]{3}$"
+  Score:
+    type: integer
+    min: 0
+  GameState:
+    type: enum
+    values: [WAITING, PLAYING, FINISHED]
+  Position:
+    type: object
+    schema:
+      x: integer
+      y: integer
+
+design:
+  components:
+    - name: GameServer
+      state:
+        - name: players
+          schema:
+            player_id: PlayerId
+            score: Score
+            status: string
+            position: Position
+        - name: match_info
+          schema:
+            match_id: string
+            state: GameState
+      handlers:
+        - on_message: JoinGame
+          logic:
+            - create: players
+              data:
+                player_id: "{{trigger.payload.player_id}}"
+                score: 0
+                status: "CONNECTED"
+                position: {x: 0, y: 0}
+        
+        - on_message: PlayerMove
+          logic:
+            - update: players
+              where:
+                player_id: "{{trigger.payload.player_id}}"
+              set:
+                position: "{{trigger.payload.new_position}}"
+
+        - on_message: PlayerAction
+          logic:
+            - read: players
+              where:
+                player_id: "{{trigger.payload.player_id}}"
+              as: players
+            - update: players
+              where:
+                player_id: "{{trigger.payload.player_id}}"
+              set:
+                score: "{{read.players.score + 10}}"
+
+    - name: Matchmaker
+      state:
+        - name: queue
+          schema:
+            player_id: PlayerId
+            timestamp: integer
+      handlers:
+        - on_message: RequestMatch
+          logic:
+            - create: queue
+              data:
+                player_id: "{{trigger.payload.player_id}}"
+                timestamp: "{{trigger.timestamp}}"
+            - send:
+                to: GameServer
+                message: JoinGame
+                payload:
+                  player_id: "{{trigger.payload.player_id}}"
+
+run:
+  scenarios:
+    - name: BasicMatchmaking
+      steps:
+        - send: RequestMatch
+          to: Matchmaker
+          payload:
+            player_id: "P_001"
+    
+    - name: GameplayLoop
+      steps:
+        - send: JoinGame
+          to: GameServer
+          payload:
+            player_id: "P_002"
+        - send: PlayerMove
+          to: GameServer
+          payload:
+            player_id: "P_002"
+            new_position: {x: 10, y: 20}
+        - send: PlayerAction
+          to: GameServer
+          payload:
+            player_id: "P_002"
+    
+    - name: RaceConditionTest
+      steps:
+        - send: JoinGame
+          to: GameServer
+          payload:
+            player_id: "P_003"
+        # Two concurrent actions: Read-Modify-Write race
+        - send: PlayerAction
+          to: GameServer
+          payload:
+            player_id: "P_003"
+        - send: PlayerAction
+          to: GameServer
+          payload:
+            player_id: "P_003"
+
+    # M6: Moderate race condition - 2 concurrent score updates
+    # Expected final score: 20 (2 * 10)
+    # Race condition bug: Sometimes results in 10 due to lost update
+    # This gives ~50-70% pass rate for better demo
+    - name: ModerateRaceCondition
+      steps:
+        - send: JoinGame
+          to: GameServer
+          payload:
+            player_id: "P_RACE"
+        - send: PlayerAction
+          to: GameServer
+          payload:
+            player_id: "P_RACE"
+        - send: PlayerAction
+          to: GameServer
+          payload:
+            player_id: "P_RACE"

@@ -1,0 +1,11 @@
+clotho_version: "1.0"
+
+# Missing 'types' section
+
+design:
+  components: []
+
+# Missing 'test' section
+
+run:
+  generators: []

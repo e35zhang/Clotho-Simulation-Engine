@@ -1,0 +1,51 @@
+clotho_version: "1.0"
+
+types:
+  Counter: integer
+
+design:
+  components:
+    - name: CounterService
+      state:
+        - name: counters
+          schema: {id: string, value: Counter}
+      handlers:
+        - on_message: Increment
+          logic:
+            # Read-Modify-Write Race Condition Pattern
+            - read: counters
+              key: "c1"
+              as: current
+            
+            # In Aggressive mode, scheduler should switch context here
+            
+            - update: counters
+              where: {id: "c1"}
+              set: {value: "{{ read.current.value + 1 }}"}
+
+test:
+  invariants:
+    # If 2 increments happen concurrently, value should be 2.
+    # If race condition occurs (lost update), value will be 1.
+    - name: "No Lost Update"
+      check: "read.CounterService.counters.value == 2"
+
+run:
+
+  fixtures:
+    - component: CounterService
+      table: counters
+      rows: [{id: "c1", value: 0}]
+  
+  environment:
+    seed: 12345
+    scheduler:
+      interleaving_mode: "Aggressive"
+
+  generators:
+    - component: CounterService
+      count: 2
+      behavior:
+        send: Increment
+        # Force them to happen "simultaneously" in logical time
+        strategy: "concurrent" 

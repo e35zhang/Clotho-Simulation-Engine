@@ -1,0 +1,93 @@
+clotho_version: '3.0'
+types:
+  Money:
+    type: integer
+    unit: cents
+    constraints:
+      min: 0
+  AccountId:
+    type: string
+    pattern: ^ACC_[0-9]{4}$
+  TransactionId:
+    type: string
+    pattern: ^TXN_[0-9a-f]{8}$
+  TransactionStatus:
+    type: enum
+    values:
+    - PENDING
+    - COMPLETED
+    - FAILED
+    - FLAGGED
+  messages:
+    InitiateTransfer:
+      from_id: AccountId
+      to_id: AccountId
+      amount: Money
+      request_id: TransactionId
+    TransferCompleted:
+      request_id: TransactionId
+      status: TransactionStatus
+      timestamp: string
+    TransferFailed:
+      request_id: TransactionId
+      reason: string
+
+test:
+  cases: []
+
+design:
+  components:
+  - name: AccountService
+    state:
+    - name: accounts
+      schema:
+        account_id:
+          type: AccountId
+          pk: true
+        balance:
+          type: Money
+          default: 1000
+        status:
+          type: string
+          default: ACTIVE
+    handlers:
+    - on_message: null
+      logic:
+      - read: null
+        where: null
+        as: null
+      - read: null
+        where: null
+        as: null
+  - name: TransactionService
+    state:
+    - name: transactions
+      schema:
+        tx_id:
+          type: TransactionId
+          pk: true
+        status:
+          type: TransactionStatus
+        updated_at:
+          type: string
+    handlers:
+    - on_message: null
+      logic:
+      - create: null
+        data: null
+  - name: NotificationService
+    state:
+    - name: logs
+      schema:
+        log_id:
+          type: string
+          pk: true
+        message:
+          type: string
+    handlers:
+    - on_message: null
+      logic:
+      - create: null
+        data: null
+run:
+  scenarios: []

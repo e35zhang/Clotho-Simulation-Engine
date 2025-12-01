@@ -1,0 +1,43 @@
+clotho_version: "1.0"
+
+types:
+  SeqNum: integer
+
+design:
+  components:
+    - name: Sender
+      handlers:
+        - on_message: Ping
+          logic:
+            - send:
+                to: Receiver
+                message: Pong
+                payload: {seq: "{{trigger.payload.seq}}"}
+
+    - name: Receiver
+      state:
+        - name: received_log
+          schema: {id: string, seq: integer}
+      handlers:
+        - on_message: Pong
+          logic:
+            - create: received_log
+              data: {id: "msg_{{trigger.payload.seq}}", seq: "{{trigger.payload.seq}}"}
+
+test:
+  invariants: []
+
+run:
+  environment:
+    seed: 12345
+    faults:
+      - type: MessageDrop
+        target: Receiver
+        probability: 0.5 # 50% chance to drop messages to Receiver
+
+  generators:
+    - component: Sender
+      count: 10
+      behavior:
+        send: Ping
+        payload: {seq: "$sequence"}

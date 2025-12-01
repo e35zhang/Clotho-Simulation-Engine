@@ -1,0 +1,60 @@
+// Define the starting rule for an expression
+?start: expression
+
+// Expression hierarchy: Logic -> Comparison -> Addition -> Multiplication -> Term
+?expression: logical_or
+
+?logical_or: logical_and (OR logical_and)*
+?logical_and: comparison (AND comparison)*
+?comparison: addition ( (EQ | NEQ | GT | LT | GTE | LTE | IN) addition )*
+
+?addition: multiplication ( (ADD | SUB) multiplication )*
+?multiplication: term ( (MUL | DIV) term )*
+
+// Operator Terminals
+ADD: "+"
+SUB: "-"
+MUL: "*"
+DIV: "/"
+
+OR: "or" | "OR" | "||"
+AND: "and" | "AND" | "&&"
+EQ: "=="
+NEQ: "!="
+GT: ">"
+LT: "<"
+GTE: ">="
+LTE: "<="
+IN: "in" | "IN"
+
+// A term can be a variable, a literal value, a function call, or a parenthesized expression
+?term: literal
+     | variable
+     | function_call
+     | list_literal
+     | "(" expression ")"
+
+// Variable access, e.g., read.user.id or trigger.payload.order_id
+variable: CNAME ("." CNAME)*
+
+// Literal values
+literal: SIGNED_NUMBER -> number
+       | ESCAPED_STRING -> string
+       | "true" -> true_lit
+       | "false" -> false_lit
+       | "null" -> null_lit
+
+// List literal: [1, 2, "a"]
+list_literal: "[" [expression ("," expression)*] "]"
+
+// Function calls with arguments: sum(a, b)
+function_call: CNAME "(" [expression ("," expression)*] ")"
+
+// Import common terminal definitions from Lark's library
+%import common.CNAME
+%import common.SIGNED_NUMBER
+%import common.ESCAPED_STRING
+%import common.WS
+
+// Ignore whitespace between tokens
+%ignore WS

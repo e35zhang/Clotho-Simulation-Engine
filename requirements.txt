@@ -1,0 +1,13 @@
+# Clotho Engine - Core Dependencies
+# ================================
+
+# Parser & Data Processing
+lark>=1.0.0          # Expression grammar parser
+pyyaml>=6.0          # YAML scenario parsing
+
+# Testing
+pytest>=7.0.0        # Test framework
+
+# Note: All other imports (sqlite3, json, os, sys, uuid, random, logging, 
+# concurrent.futures, dataclasses, datetime, functools, typing, re, copy, 
+# hashlib, time, importlib, math) are Python standard library.

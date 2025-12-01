@@ -1,0 +1,45 @@
+clotho_version: "1.0"
+
+types:
+  Score: integer
+
+design:
+  components:
+    - name: RiskEngine
+      state:
+        - name: scores
+          schema:
+            user_id: string
+            score: Score
+      invariants:
+        # Complex logic: All scores must be between 0 and 100
+        - "all(read.RiskEngine.scores.score) >= 0 && all(read.RiskEngine.scores.score) <= 100"
+        # List literal check
+        - "len(read.RiskEngine.scores) < 1000"
+      handlers:
+        - on_message: UpdateScore
+          logic:
+            - update: scores
+              where:
+                user_id: "{{trigger.payload.user_id}}"
+              set:
+                score: "{{trigger.payload.new_score}}"
+
+test:
+  cases: []
+
+run:
+  fixtures:
+    - component: RiskEngine
+      table: scores
+      rows:
+        - {user_id: "u1", score: 50}
+        - {user_id: "u2", score: 80}
+  generators:
+    - component: RiskEngine
+      count: 1
+      behavior:
+        send: UpdateScore
+        payload:
+          user_id: "u1"
+          new_score: 95

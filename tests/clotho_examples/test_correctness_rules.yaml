@@ -1,0 +1,39 @@
+clotho_version: "1.0"
+
+types:
+  Money: integer
+
+design:
+  components:
+    - name: AccountService
+      state:
+        - name: accounts
+          schema: {id: string, balance: Money}
+    - name: TransactionService
+      state:
+        - name: Transactions
+          schema: {id: string, status: string}
+
+# Part 4: Definition of Correctness — Test (Rules)
+test:
+  # Safety Constraints (Spatial)
+  invariants:
+    - name: "No Negative Balance"
+      check: "all(read.AccountService.accounts.balance >= 0)"
+      severity: CRITICAL
+
+    - name: "Money Conservation"
+      check: "sum(read.AccountService.accounts.balance) == 1000000"
+
+  # Liveness/Temporal Constraints (Properties)
+  properties:
+    - name: "Transfer Completion"
+      # LTL: If transfer initiated, eventually status changes
+      assert: "always(msg.InitiateTransfer -> eventually(read.TransactionService.Transactions.status != 'PENDING'))"
+    
+    - name: "Efficiency Check"
+      # Performance Metric
+      assert: "p99(trace.db_ops_count) < 10"
+
+run:
+  generators: []

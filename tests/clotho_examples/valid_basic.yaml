@@ -1,0 +1,41 @@
+clotho_version: "1.0"
+
+types:
+  Money:
+    type: integer
+    min: 0
+  AccountStatus:
+    type: enum
+    values: [Active, Suspended, Closed]
+
+design:
+  components:
+    - name: AccountService
+      state:
+        - name: accounts
+          schema:
+            account_id: string
+            balance: integer
+            status: AccountStatus
+      invariants:
+        - "sum(read.AccountService.accounts.balance) >= 0"
+      handlers:
+        - on_message: CreateAccount
+          logic:
+            - create: accounts
+              data:
+                account_id: "{{trigger.payload.account_id}}"
+                balance: 0
+                status: Active
+
+test:
+  cases: []
+
+run:
+  generators:
+    - component: AccountService
+      count: 1
+      behavior:
+        send: CreateAccount
+        payload:
+          account_id: "acc_123"
